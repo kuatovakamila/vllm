@@ -269,7 +269,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
 
     # --8<-- [start:chat-completion-sampling-params]
     use_beam_search: bool = False
-    top_k: int | None = None
+    top_k: int | None = Field(None, le=_INT64_MAX)
     min_p: float | None = None
     repetition_penalty: float | None = None
     watermarking: bool | None = None
@@ -514,7 +514,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
         "can detect such behavior and terminate early, saving time and tokens.",
     )
 
-    stream_interval: Annotated[int, Field(ge=1)] | None = Field(
+    stream_interval: Annotated[int, Field(ge=1, le=_INT64_MAX)] | None = Field(
         default=None,
         description=(
             "Number of tokens to batch into each streamed chunk. Raises the "
@@ -887,6 +887,12 @@ class ChatCompletionRequest(OpenAIBaseModel):
         # structured_outputs may arrive as a dict (from JSON/raw kwargs) or
         # as a StructuredOutputsParams dataclass instance.
         is_dataclass = isinstance(structured_outputs_kwargs, StructuredOutputsParams)
+        if not is_dataclass and not isinstance(structured_outputs_kwargs, dict):
+            raise VLLMValidationError(
+                "structured_outputs must be an object, got "
+                f"{type(structured_outputs_kwargs).__name__}.",
+                parameter="structured_outputs",
+            )
         count = sum(
             (
                 getattr(structured_outputs_kwargs, k, None)
@@ -989,7 +995,18 @@ class ChatCompletionRequest(OpenAIBaseModel):
                         f" in `tool_choice`! {correct_usage_message}",
                         parameter="tool_choice.function.name",
                     )
-                for tool in data["tools"]:
+                tools = data["tools"]
+                if not isinstance(tools, list) or not all(
+                    isinstance(tool, dict)
+                    and isinstance(tool.get("function"), dict)
+                    and isinstance(tool["function"].get("name"), str)
+                    for tool in tools
+                ):
+                    # Leave malformed `tools` entries to the field validation,
+                    # which reports the offending entry instead of failing
+                    # here with a KeyError or TypeError.
+                    return data
+                for tool in tools:
                     if tool["function"]["name"] == function_name:
                         valid_tool = True
                         break
@@ -1133,7 +1150,7 @@ class BatchChatCompletionRequest(OpenAIBaseModel):
     # vLLM extensions
     best_of: int | None = None
     use_beam_search: bool = False
-    top_k: int | None = None
+    top_k: int | None = Field(None, le=_INT64_MAX)
     min_p: float | None = None
     repetition_penalty: float | None = None
     watermarking: bool | None = None

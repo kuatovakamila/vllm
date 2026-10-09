@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import pytest
+from pydantic import ValidationError
 
 from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest
 from vllm.exceptions import VLLMValidationError
@@ -180,5 +181,42 @@ def test_multiple_structured_outputs_rejected():
                     "json": {"type": "object"},
                     "regex": ".*",
                 },
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "tools",
+    [
+        [{}],
+        [{"type": "function", "function": {}}],
+        [{"type": "function", "function": {"name": "f"}}, None],
+        "not-a-list",
+    ],
+)
+def test_chat_completion_request_with_malformed_tools_and_named_tool_choice(tools):
+    """Malformed `tools` entries are reported by the field validation (a 400),
+    not as a KeyError or TypeError from the named tool_choice check."""
+    with pytest.raises(ValidationError):
+        ChatCompletionRequest.model_validate(
+            {
+                "messages": [{"role": "user", "content": "Hello"}],
+                "model": "facebook/opt-125m",
+                "tools": tools,
+                "tool_choice": {"type": "function", "function": {"name": "f"}},
+            }
+        )
+
+
+def test_chat_completion_request_with_named_tool_choice_not_in_tools():
+    with pytest.raises(
+        VLLMValidationError, match="does not match any of the specified"
+    ):
+        ChatCompletionRequest.model_validate(
+            {
+                "messages": [{"role": "user", "content": "Hello"}],
+                "model": "facebook/opt-125m",
+                "tools": [SAMPLE_TOOL],
+                "tool_choice": {"type": "function", "function": {"name": "nope"}},
             }
         )

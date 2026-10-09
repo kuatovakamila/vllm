@@ -446,3 +446,66 @@ def test_encode_messages_unknown_role_raises_value_error(encoding_module):
             [{"role": "SYSTEM", "content": "Hello"}],
             thinking_mode="chat",
         )
+
+
+# --- Malformed request fields are client errors, not internal errors --------
+
+_REQUEST_BASES = [
+    (CompletionRequest, {"prompt": "hi"}),
+    (ChatCompletionRequest, {"messages": [{"role": "user", "content": "hi"}]}),
+]
+
+
+@pytest.mark.parametrize("structured_outputs", ["foo", 5, [], True])
+@pytest.mark.parametrize(("request_cls", "base"), _REQUEST_BASES)
+def test_non_object_structured_outputs_rejected(request_cls, base, structured_outputs):
+    # The before-validator used to call `.get` on whatever arrived, so a
+    # non-object value surfaced as an AttributeError (HTTP 500) instead of a
+    # validation error (HTTP 400).
+    with pytest.raises(
+        VLLMValidationError, match="structured_outputs must be an object"
+    ):
+        request_cls.model_validate(
+            {"model": "m", **base, "structured_outputs": structured_outputs}
+        )
+
+
+@pytest.mark.parametrize(("request_cls", "base"), _REQUEST_BASES)
+def test_object_structured_outputs_still_accepted(request_cls, base):
+    request = request_cls.model_validate(
+        {"model": "m", **base, "structured_outputs": {"regex": "[a-z]+"}}
+    )
+    assert request.structured_outputs.regex == "[a-z]+"
+
+
+@pytest.mark.parametrize("length_penalty", [float("inf"), float("-inf"), float("nan")])
+def test_beam_search_rejects_non_finite_length_penalty(length_penalty):
+    # A non-finite length penalty makes the beam score divide by zero (or
+    # compare NaNs) while beams are sorted, which escaped as a 500.
+    with pytest.raises(VLLMValidationError, match="length_penalty must be a finite"):
+        BeamSearchParams(beam_width=1, max_tokens=1, length_penalty=length_penalty)
+
+
+def test_completion_beam_conversion_rejects_non_finite_length_penalty():
+    # JSON allows -Infinity, and pydantic accepts it for a float field.
+    request = CompletionRequest.model_validate(
+        {
+            "model": "m",
+            "prompt": "hi",
+            "use_beam_search": True,
+            "length_penalty": float("-inf"),
+        }
+    )
+    with pytest.raises(VLLMValidationError, match="length_penalty must be a finite"):
+        request.to_beam_search_params(max_tokens=4)
+
+
+@pytest.mark.parametrize("field", ["top_k", "stream_interval"])
+@pytest.mark.parametrize(("request_cls", "base"), _REQUEST_BASES)
+def test_request_integers_are_bounded_to_int64(request_cls, base, field):
+    # Values above int64 pass the frontend and only fail when the request is
+    # serialized for the engine, which is reported as an internal error.
+    with pytest.raises(ValidationError):
+        request_cls.model_validate({"model": "m", **base, field: 2**64})
+    request = request_cls.model_validate({"model": "m", **base, field: 7})
+    assert getattr(request, field) == 7
